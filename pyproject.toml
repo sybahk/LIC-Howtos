@@ -1,0 +1,16 @@
+[project]
+name = "LIC-Howtos"
+version = "0.1.0"
+description = "Materials for training Learned Image Compression models"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "constriction==0.4.1",
+    "ruff>=0.13.1",
+    "torch",
+    "torchvision",
+    "imagesize",
+]
+
+[tool.poetry]
+package-mode = false
