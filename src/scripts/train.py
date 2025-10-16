@@ -166,9 +166,8 @@ def train_one_epoch(
     model.train()
     device = next(model.parameters()).device
 
-    for i, d in enumerate(make_infinite(train_dataloader)):
-        if i > epoch_size:
-            break
+    for i in range(epoch_size):
+        d = next(train_dataloader)
         d = d.to(device)
 
         optimizer.zero_grad()
@@ -182,7 +181,7 @@ def train_one_epoch(
         optimizer.step()
 
         if i % 10 == 0:
-            print(
+            logger.info(
                 f"Train epoch {epoch}: ["
                 f"{i} / {epoch_size}"
                 f" ({100.0 * i / epoch_size:.0f}%)]"
@@ -210,7 +209,7 @@ def test_epoch(epoch, test_dataloader, model, criterion):
             loss.update(out_criterion["loss"])
             mse_loss.update(out_criterion["mse_loss"])
 
-    print(
+    logger.info(
         f"Test epoch {epoch}: Average losses:"
         f"\tLoss: {loss.avg:.3f} |"
         f"\tMSE loss: {mse_loss.avg:.3f} |"
@@ -232,10 +231,16 @@ def save_checkpoint(state, is_best, savepath, filename="checkpoint.pth.tar"):
 
 
 def main(args):
-    os.makedirs(args.logpath)
+    os.makedirs(args.logpath, exist_ok=True)
     logging.basicConfig(
-        filename=os.path.join(args.logpath, f"train_{args.lmbda}.log"),
         level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        handlers=[
+            logging.FileHandler(
+                os.path.join(args.logpath, f"train_{args.lmbda}.log"), "w"
+            ),
+            logging.StreamHandler(),
+        ],
     )
 
     if args.seed is not None:
@@ -255,6 +260,7 @@ def main(args):
         pin_memory=(device == "cuda"),
         persistent_workers=True,
     )
+    train_dataloader = make_infinite(train_dataloader)
 
     test_dataloader = DataLoader(
         test_dataset,
@@ -272,7 +278,7 @@ def main(args):
 
     last_epoch = 0
     if args.checkpoint:  # load from previous checkpoint
-        print("Loading", args.checkpoint)
+        logger.info("Loading", args.checkpoint)
         checkpoint = torch.load(args.checkpoint, map_location=device)
         last_epoch = checkpoint["epoch"] + 1
         net.load_state_dict(checkpoint["state_dict"])
@@ -280,7 +286,7 @@ def main(args):
 
     best_loss = float("inf")
     for epoch in range(last_epoch, args.epochs):
-        print(f"Learning rate: {optimizer.param_groups[0]['lr']}")
+        logger.info(f"Learning rate: {optimizer.param_groups[0]['lr']}")
         train_one_epoch(
             net,
             criterion,
@@ -302,6 +308,7 @@ def main(args):
                     "state_dict": net.state_dict(),
                     "loss": loss,
                     "optimizer": optimizer.state_dict(),
+                    "lmbda": args.lmbda,
                 },
                 is_best,
                 os.path.join(args.savepath, str(args.lmbda)),

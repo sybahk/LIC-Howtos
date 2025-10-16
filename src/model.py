@@ -125,16 +125,21 @@ class MeanScaleHyperprior(nn.Module):
         #######################################################################################
         outputs = {}
 
-        y = self.g_a(x)
-        z = self.h_a(y)
+        y = self.g_a(x)  # encode x into y
+        z = self.h_a(y)  # encode y into z
+        # quantize z to z_hat
         z_hat = quantize(z - self.z_means) + self.z_means
 
+        # create gaussian_params using z_hat and h_s
         gaussian_params = self.h_s(z_hat)
+        # split gaussian_params over channel dimension to scales and means
         scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        # quantize y to y_hat
         y_hat = quantize(y - means_hat) + means_hat
+        # decode y_hat into reconstructed image x_hat
         x_hat = self.g_s(y_hat)
-        outputs["x_hat"] = x_hat
 
+        outputs["x_hat"] = x_hat
         z_bits = self.estimate_bits(z, self.z_scales, self.z_means)
         y_bits = self.estimate_bits(y, scales_hat, means_hat)
         outputs["estimated_bits"] = {"y": y_bits, "z": z_bits}
@@ -181,7 +186,7 @@ class MeanScaleHyperprior(nn.Module):
             y_strings = np.array(gaussian_coder.get_compressed()).tobytes()
 
             outputs["compressed"] = {
-                "strings": [y_strings, z_strings],
+                "strings": [[y_strings], [z_strings]],
                 "shape": z.shape[-2:],
             }
             return outputs
@@ -194,7 +199,7 @@ class MeanScaleHyperprior(nn.Module):
 
         # decode z
         gaussian_coder = constriction.stream.stack.AnsCoder(
-            np.frombuffer(strings[1], dtype=np.uint32)
+            np.frombuffer(strings[1][0], dtype=np.uint32)
         )
         dummy_z = torch.zeros((1, self.N, *shape))  # to indicate z's size
         z_scales = torch.clamp(self.z_scales, 0.11)
@@ -214,7 +219,7 @@ class MeanScaleHyperprior(nn.Module):
         scales_hat = torch.clamp_(scales_hat, 0.11)
 
         gaussian_coder = constriction.stream.stack.AnsCoder(
-            np.frombuffer(strings[0], dtype=np.uint32)
+            np.frombuffer(strings[0][0], dtype=np.uint32)
         )
         y_symbols = gaussian_coder.decode(
             entropy_model,

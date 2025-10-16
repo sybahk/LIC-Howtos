@@ -27,14 +27,50 @@
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import struct
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms.v2 as v2
+from PIL import Image
 from torch import Tensor
 
-
 # https://github.com/InterDigitalInc/CompressAI/blob/master/examples/codec.py
+
+
+def pad(x, p=2**6):
+    h, w = x.size(2), x.size(3)
+    pad, _ = compute_padding(h, w, min_div=p)
+    return F.pad(x, pad, mode="constant", value=0)
+
+
+def crop(x, size):
+    H, W = x.size(2), x.size(3)
+    h, w = size
+    _, unpad = compute_padding(h, w, out_h=H, out_w=W)
+    return F.pad(x, unpad, mode="constant", value=0)
+
+
+def filesize(filepath: str) -> int:
+    if not Path(filepath).is_file():
+        raise ValueError(f'Invalid file "{filepath}".')
+    return Path(filepath).stat().st_size
+
+
+def load_image(filepath: str) -> Image.Image:
+    return Image.open(filepath).convert("RGB")
+
+
+def img2torch(img: Image.Image) -> torch.Tensor:
+    ToTensor = v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=True)])
+    return ToTensor(img).unsqueeze(0)
+
+
+def torch2img(x: torch.Tensor) -> Image.Image:
+    return v2.ToPILImage()(x.clamp_(0, 1).squeeze())
+
+
 def write_uints(fd, values, fmt=">{:d}I"):
     fd.write(struct.pack(fmt.format(len(values)), *values))
     return len(values) * 4
@@ -54,6 +90,16 @@ def write_body(fd, shape, out_strings):
         bytes_cnt += write_uints(fd, (len(s[0]),))
         bytes_cnt += write_bytes(fd, s[0])
     return bytes_cnt
+
+
+def write_uchars(fd, values, fmt=">{:d}B"):
+    fd.write(struct.pack(fmt.format(len(values)), *values))
+    return len(values) * 1
+
+
+def read_uchars(fd, n, fmt=">{:d}B"):
+    sz = struct.calcsize("B")
+    return struct.unpack(fmt.format(n), fd.read(n * sz))
 
 
 def read_uints(fd, n, fmt=">{:d}I"):
@@ -93,6 +139,37 @@ def quantize_ste(x: Tensor) -> Tensor:
         `x_round = x_round - x.detach() + x`
     """
     return (torch.round(x) - x).detach() + x
+
+
+def compute_padding(in_h: int, in_w: int, *, out_h=None, out_w=None, min_div=1):
+    """Returns tuples for padding and unpadding.
+
+    Args:
+        in_h: Input height.
+        in_w: Input width.
+        out_h: Output height.
+        out_w: Output width.
+        min_div: Length that output dimensions should be divisible by.
+    """
+    if out_h is None:
+        out_h = (in_h + min_div - 1) // min_div * min_div
+    if out_w is None:
+        out_w = (in_w + min_div - 1) // min_div * min_div
+
+    if out_h % min_div != 0 or out_w % min_div != 0:
+        raise ValueError(
+            f"Padded output height and width are not divisible by min_div={min_div}."
+        )
+
+    left = (out_w - in_w) // 2
+    right = out_w - in_w - left
+    top = (out_h - in_h) // 2
+    bottom = out_h - in_h - top
+
+    pad = (left, right, top, bottom)
+    unpad = (-left, -right, -top, -bottom)
+
+    return pad, unpad
 
 
 # https://github.com/InterDigitalInc/CompressAI/blob/master/compressai/ops/bound_ops.py
