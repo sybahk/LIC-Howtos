@@ -33,8 +33,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from ops import GDN, LowerBoundFunction
-from ops import quantize_ste as quantize
+from src.ops import GDN, LowerBoundFunction
+from src.ops import quantize_ste as quantize
 
 
 class MeanScaleHyperprior(nn.Module):
@@ -65,7 +65,7 @@ class MeanScaleHyperprior(nn.Module):
         x_hat ──◄─┤g_s├────┘
                   └───┘
 
-        GC = Gaussian conditional
+        GC = Gaussian conditional entropy model
 
     Args:
         N (int): Number of channels
@@ -78,29 +78,29 @@ class MeanScaleHyperprior(nn.Module):
         self.N, self.M = N, M
 
         self.g_a = nn.Sequential(
-            nn.Conv2d(3, N),
+            nn.Conv2d(3, N, 5, 2, 2),
             GDN(N),
-            nn.Conv2d(N, N),
+            nn.Conv2d(N, N, 5, 2, 2),
             GDN(N),
-            nn.Conv2d(N, N),
+            nn.Conv2d(N, N, 5, 2, 2),
             GDN(N),
-            nn.Conv2d(N, M),
+            nn.Conv2d(N, M, 5, 2, 2),
         )
 
         self.g_s = nn.Sequential(
-            nn.ConvTranspose2d(M, N),
+            nn.ConvTranspose2d(M, N, 5, 2, 2, 1),
             GDN(N, inverse=True),
-            nn.ConvTranspose2d(N, N),
+            nn.ConvTranspose2d(N, N, 5, 2, 2, 1),
             GDN(N, inverse=True),
-            nn.ConvTranspose2d(N, N),
+            nn.ConvTranspose2d(N, N, 5, 2, 2, 1),
             GDN(N, inverse=True),
-            nn.ConvTranspose2d(N, 3),
+            nn.ConvTranspose2d(N, 3, 5, 2, 2, 1),
         )
 
         self.h_a = nn.Sequential(
             nn.Conv2d(M, N, 3, padding=1),
             nn.LeakyReLU(inplace=True),
-            nn.Conv2d(M, N, 5, 2, padding=2),
+            nn.Conv2d(N, N, 5, 2, padding=2),
             nn.LeakyReLU(inplace=True),
             nn.Conv2d(N, N, 5, 2, padding=2),
         )
@@ -116,8 +116,8 @@ class MeanScaleHyperprior(nn.Module):
         self.z_scales = nn.Parameter(torch.randn(1, N, 1, 1), requires_grad=True)
         self.z_means = nn.Parameter(torch.randn(1, N, 1, 1), requires_grad=True)
 
-        self.lowerbound_scales = 0.11
-        self.lowerbound_likelihoods = 1e-9
+        self.register_buffer("lowerbound_scales", torch.Tensor([float(0.1)]))
+        self.register_buffer("lowerbound_likelihoods", torch.Tensor([float(1e-9)]))
 
     def forward(self, x, include_strings=False):
         #######################################################################################
@@ -146,44 +146,48 @@ class MeanScaleHyperprior(nn.Module):
         #######################################################################################
         # Actual entropy coding happens here                                                  #
         #######################################################################################
-        self.gaussian_coder = constriction.stream.stack.AnsCoder()
-        self.entropy_model = constriction.stream.model.QuantizedGaussian(-256, 256)
+        with torch.no_grad():
+            # Constriction library의 자세한 사용 방법은 API 문서 참고
 
-        z_for_code = torch.round(z - self.z_means)
-        y_for_code = torch.round(y - means_hat)
+            self.gaussian_coder = constriction.stream.stack.AnsCoder()
+            self.entropy_model = constriction.stream.model.QuantizedGaussian(-256, 256)
 
-        z_scales = torch.clamp(self.z_scales, 0.11)
-        scales_hat = torch.clamp(scales_hat, 0.11)
+            z_for_code = torch.round(z - self.z_means)
+            y_for_code = torch.round(y - means_hat)
 
-        # round(z)에 대해 N(self.z_means, self.z_scales)으로 엔트로피 코딩하는 대신,
-        # round(z - self.z_means)에 대해 N(0, self.z_scales)으로 엔트로피 코딩 수행
-        # -> 실험적으로 더 높은 압축 효율; 아래 링크 참고
-        # https://groups.google.com/g/tensorflow-compression/c/LQtTAo6l26U/m/cD4ZzmJUAgAJ
+            z_scales = torch.clamp(self.z_scales, 0.11)
+            scales_hat = torch.clamp(scales_hat, 0.11)
 
-        self.gaussian_coder.encode_reverse(
-            self.to_1d_numpy(z_for_code, np.int32),
-            self.entropy_model,
-            self.to_1d_numpy(torch.zeros_like(z), np.float32),
-            self.to_1d_numpy(z_scales, np.float32, expand_as=z),
-        )
-        z_strings = np.array(self.gaussian_coder.get_compressed()).tobytes()
+            # round(z)에 대해 N(z_means, z_scales)으로 엔트로피 코딩하는 대신,
+            # round(z - z_means)에 대해 N(0, z_scales)으로 엔트로피 코딩 수행
+            # -> 실험적으로 더 높은 압축 효율; 아래 링크 참고
+            # https://groups.google.com/g/tensorflow-compression/c/LQtTAo6l26U/m/cD4ZzmJUAgAJ
 
-        self.gaussian_coder.clear()
+            self.gaussian_coder.encode_reverse(
+                self.to_1d_numpy(z_for_code, np.int32),
+                self.entropy_model,
+                self.to_1d_numpy(torch.zeros_like(z), np.float32),
+                self.to_1d_numpy(z_scales, np.float32, expand_as=z),
+            )
+            z_strings = np.array(self.gaussian_coder.get_compressed()).tobytes()
 
-        self.gaussian_coder.encode_reverse(
-            self.to_1d_numpy(y_for_code, np.int32),
-            self.entropy_model,
-            self.to_1d_numpy(torch.zeros_like(y), np.float32),
-            self.to_1d_numpy(scales_hat, np.float32),
-        )
-        y_strings = np.array(self.gaussian_coder.get_compressed()).tobytes()
+            self.gaussian_coder.clear()  # y를 코딩하기 전 gaussian_coder의 상태 초기화
 
-        outputs["compressed"] = {
-            "strings": [[y_strings], [z_strings]],
-            "shape": z.shape[-2:],
-        }
-        return outputs
+            self.gaussian_coder.encode_reverse(
+                self.to_1d_numpy(y_for_code, np.int32),
+                self.entropy_model,
+                self.to_1d_numpy(torch.zeros_like(y), np.float32),
+                self.to_1d_numpy(scales_hat, np.float32),
+            )
+            y_strings = np.array(self.gaussian_coder.get_compressed()).tobytes()
 
+            outputs["compressed"] = {
+                "strings": [y_strings, z_strings],
+                "shape": z.shape[-2:],
+            }
+            return outputs
+
+    @torch.no_grad
     def decompress(self, strings, shape):
         device = next(self.parameters()).device
         assert isinstance(strings, list) and len(strings) == 2
@@ -191,13 +195,13 @@ class MeanScaleHyperprior(nn.Module):
 
         # decode z
         self.gaussian_coder = constriction.stream.stack.AnsCoder(
-            np.frombuffer(strings[0][1], dtype=np.uint32)
+            np.frombuffer(strings[1], dtype=np.uint32)
         )
-        dummy_z = torch.zeros((self.N, *shape))  # to indicate z's size
+        dummy_z = torch.zeros((1, self.N, *shape))  # to indicate z's size
         z_scales = torch.clamp(self.z_scales, 0.11)
 
-        # 인코딩 된 round(z - z_means)를 먼저 N(0, self.z_scales)로 디코딩한 후,
-        # self.z_means를 더해 z_hat 복원
+        # 먼저 인코딩 된 round(z - z_means)를 N(0, z_scales)로 디코딩한 후,
+        # z_means를 더해 z_hat 복원
         z_symbols = self.gaussian_coder.decode(
             self.entropy_model,
             self.to_1d_numpy(dummy_z, np.float32),
@@ -211,7 +215,7 @@ class MeanScaleHyperprior(nn.Module):
         scales_hat = torch.clamp_(scales_hat, 0.11)
 
         self.gaussian_coder = constriction.stream.stack.AnsCoder(
-            np.frombuffer(strings[0][0], dtype=np.uint32)
+            np.frombuffer(strings[0], dtype=np.uint32)
         )
         y_symbols = self.gaussian_coder.decode(
             self.entropy_model,
@@ -241,17 +245,19 @@ class MeanScaleHyperprior(nn.Module):
         likelihoods = likelihoods_upper - likelihoods_lower
         likelihoods = LowerBoundFunction.apply(likelihoods, self.lowerbound_likelihoods)
 
-        bits = -torch.log2(likelihoods)
+        bits = -torch.log2(likelihoods).sum()
         return bits
 
     @staticmethod
     def to_1d_numpy(
-        inputs: Tensor, dtype: np.dtype, expand_as: None | Tensor
+        inputs: Tensor, dtype: np.dtype, expand_as: None | Tensor = None
     ) -> np.ndarray:
         # Constriction library가 1-D numpy array만을 입력으로 하므로, 그에 맞게 변형
         if expand_as is not None:
+            # 공간적 차원이 없는 z_scales와 z_means는 expand_as를 사용하여
+            # z만큼의 크기를 가지도록 확장
             inputs = inputs.expand_as(expand_as)
         return inputs.flatten().cpu().numpy().astype(dtype)
 
     def to_2d_tensor(self, inputs: np.ndarray, shape: torch.Size, device=torch.device):
-        return torch.from_numpy(inputs).to(device=device).reshape(*shape).unsqueeze_(0)
+        return torch.from_numpy(inputs).to(device=device).reshape(*shape)
