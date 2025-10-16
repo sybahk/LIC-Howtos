@@ -1,0 +1,12 @@
+# python related
+**.egg-info
+**__pycache__**
+
+# datasets, checkpoints, outputs, misc
+datasets
+save
+outputs
+logs
+
+# virtual environments
+.venv
