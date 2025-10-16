@@ -1,1 +1,11 @@
-__pycache__
+# python related
+**.egg-info
+**__pycache__**
+
+# datasets, checkpoints
+**train**
+**valid**
+save
+
+# virtual environments
+.venv

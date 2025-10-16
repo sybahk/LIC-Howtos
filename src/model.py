@@ -135,9 +135,9 @@ class MeanScaleHyperprior(nn.Module):
         x_hat = self.g_s(y_hat)
         outputs["x_hat"] = x_hat
 
-        z_bpp = self.estimate_bits(z, self.z_scales, self.z_means)
-        y_bpp = self.estimate_bits(y, scales_hat, means_hat)
-        outputs["estimated_bpps"] = {"y": y_bpp, "z": z_bpp}
+        z_bits = self.estimate_bits(z, self.z_scales, self.z_means)
+        y_bits = self.estimate_bits(y, scales_hat, means_hat)
+        outputs["estimated_bits"] = {"y": y_bits, "z": z_bits}
 
         ############## 엔트로피 코딩을 하지 않는 경우 여기에서 return ##############
         if not include_strings:

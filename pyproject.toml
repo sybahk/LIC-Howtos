@@ -10,6 +10,7 @@ dependencies = [
     "torch",
     "torchvision",
     "imagesize",
+    "more_itertools",
 ]
 
 [tool.poetry]
