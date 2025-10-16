@@ -148,9 +148,8 @@ class MeanScaleHyperprior(nn.Module):
         #######################################################################################
         with torch.no_grad():
             # Constriction library의 자세한 사용 방법은 API 문서 참고
-
-            self.gaussian_coder = constriction.stream.stack.AnsCoder()
-            self.entropy_model = constriction.stream.model.QuantizedGaussian(-256, 256)
+            gaussian_coder = constriction.stream.stack.AnsCoder()
+            entropy_model = constriction.stream.model.QuantizedGaussian(-256, 256)
 
             z_for_code = torch.round(z - self.z_means)
             y_for_code = torch.round(y - means_hat)
@@ -163,23 +162,23 @@ class MeanScaleHyperprior(nn.Module):
             # -> 실험적으로 더 높은 압축 효율; 아래 링크 참고
             # https://groups.google.com/g/tensorflow-compression/c/LQtTAo6l26U/m/cD4ZzmJUAgAJ
 
-            self.gaussian_coder.encode_reverse(
+            gaussian_coder.encode_reverse(
                 self.to_1d_numpy(z_for_code, np.int32),
-                self.entropy_model,
+                entropy_model,
                 self.to_1d_numpy(torch.zeros_like(z), np.float32),
                 self.to_1d_numpy(z_scales, np.float32, expand_as=z),
             )
-            z_strings = np.array(self.gaussian_coder.get_compressed()).tobytes()
+            z_strings = np.array(gaussian_coder.get_compressed()).tobytes()
 
-            self.gaussian_coder.clear()  # y를 코딩하기 전 gaussian_coder의 상태 초기화
+            gaussian_coder.clear()  # y를 코딩하기 전 gaussian_coder의 상태 초기화
 
-            self.gaussian_coder.encode_reverse(
+            gaussian_coder.encode_reverse(
                 self.to_1d_numpy(y_for_code, np.int32),
-                self.entropy_model,
+                entropy_model,
                 self.to_1d_numpy(torch.zeros_like(y), np.float32),
                 self.to_1d_numpy(scales_hat, np.float32),
             )
-            y_strings = np.array(self.gaussian_coder.get_compressed()).tobytes()
+            y_strings = np.array(gaussian_coder.get_compressed()).tobytes()
 
             outputs["compressed"] = {
                 "strings": [y_strings, z_strings],
@@ -191,10 +190,10 @@ class MeanScaleHyperprior(nn.Module):
     def decompress(self, strings, shape):
         device = next(self.parameters()).device
         assert isinstance(strings, list) and len(strings) == 2
-        self.entropy_model = constriction.stream.model.QuantizedGaussian(-256, 256)
+        entropy_model = constriction.stream.model.QuantizedGaussian(-256, 256)
 
         # decode z
-        self.gaussian_coder = constriction.stream.stack.AnsCoder(
+        gaussian_coder = constriction.stream.stack.AnsCoder(
             np.frombuffer(strings[1], dtype=np.uint32)
         )
         dummy_z = torch.zeros((1, self.N, *shape))  # to indicate z's size
@@ -202,8 +201,8 @@ class MeanScaleHyperprior(nn.Module):
 
         # 먼저 인코딩 된 round(z - z_means)를 N(0, z_scales)로 디코딩한 후,
         # z_means를 더해 z_hat 복원
-        z_symbols = self.gaussian_coder.decode(
-            self.entropy_model,
+        z_symbols = gaussian_coder.decode(
+            entropy_model,
             self.to_1d_numpy(dummy_z, np.float32),
             self.to_1d_numpy(z_scales, np.float32, expand_as=dummy_z),
         )
@@ -214,11 +213,11 @@ class MeanScaleHyperprior(nn.Module):
         scales_hat, means_hat = gaussian_params.chunk(2, 1)
         scales_hat = torch.clamp_(scales_hat, 0.11)
 
-        self.gaussian_coder = constriction.stream.stack.AnsCoder(
+        gaussian_coder = constriction.stream.stack.AnsCoder(
             np.frombuffer(strings[0], dtype=np.uint32)
         )
-        y_symbols = self.gaussian_coder.decode(
-            self.entropy_model,
+        y_symbols = gaussian_coder.decode(
+            entropy_model,
             self.to_1d_numpy(torch.zeros_like(means_hat), np.float32),
             self.to_1d_numpy(scales_hat, np.float32),
         )
