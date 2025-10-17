@@ -14,6 +14,8 @@ import src.ops as op
 from src.model import MeanScaleHyperprior
 
 logger = logging.getLogger(__name__)
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
 
 
 class CodecInfo(NamedTuple):
