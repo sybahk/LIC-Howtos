@@ -61,7 +61,16 @@ def encode(args):
     lmbda = state_dict["lmbda"]
     net.load_state_dict(state_dict["state_dict"])
     os.makedirs(os.path.join(args.bitstreampath, str(lmbda)), exist_ok=True)
-
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        handlers=[
+            logging.FileHandler(
+                os.path.join(args.bitstreampath, str(lmbda), f"encode_{lmbda}.log"), "w"
+            ),
+            logging.StreamHandler(),
+        ],
+    )
     for f in os.scandir(args.inputpath):
         if f.is_file() and f.name.endswith(".png"):
             img = op.load_image(f)
@@ -91,10 +100,8 @@ def encode(args):
                 out["estimated_bits"]["y"] + out["estimated_bits"]["z"]
             ) / (h * w)
             psnr = 10 * math.log10(1 / F.mse_loss(x, out["x_hat"]))
-            print(
-                "Encoded",
-                basename,
-                f": actual bpp: {bpp:.4f}, estimated_bpp: {estimated_bpp:.4f}, psnr: {psnr:.2f}dB",
+            logger.info(
+                f"Encoded {basename}: actual bpp: {bpp:.4f}, estimated_bpp: {estimated_bpp:.4f}, psnr: {psnr:.2f}dB",
             )
 
 
