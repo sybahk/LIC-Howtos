@@ -113,8 +113,8 @@ class MeanScaleHyperprior(nn.Module):
             nn.Conv2d(M * 3 // 2, M * 2, 3, padding=1),
         )
 
-        self.z_scales = nn.Parameter(torch.randn(1, N, 1, 1), requires_grad=True)
-        self.z_means = nn.Parameter(torch.randn(1, N, 1, 1), requires_grad=True)
+        self.scales_z_hat = nn.Parameter(torch.randn(1, N, 1, 1), requires_grad=True)
+        self.means_z_hat = nn.Parameter(torch.randn(1, N, 1, 1), requires_grad=True)
 
         self.register_buffer("lowerbound_scales", torch.Tensor([float(0.1)]))
         self.register_buffer("lowerbound_likelihoods", torch.Tensor([float(1e-9)]))
@@ -128,20 +128,20 @@ class MeanScaleHyperprior(nn.Module):
         y = self.g_a(x)  # encode x into y
         z = self.h_a(y)  # encode y into z
         # quantize z to z_hat
-        z_hat = quantize(z - self.z_means) + self.z_means
+        z_hat = quantize(z - self.means_z_hat) + self.means_z_hat
 
         # create gaussian_params using z_hat and h_s
         gaussian_params = self.h_s(z_hat)
         # split gaussian_params over channel dimension to scales and means
-        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        scales_y_hat, means_y_hat = gaussian_params.chunk(2, 1)
         # quantize y to y_hat
-        y_hat = quantize(y - means_hat) + means_hat
+        y_hat = quantize(y - means_y_hat) + means_y_hat
         # decode y_hat into reconstructed image x_hat
         x_hat = self.g_s(y_hat)
 
         outputs["x_hat"] = x_hat
-        z_bits = self.estimate_bits(z, self.z_scales, self.z_means)
-        y_bits = self.estimate_bits(y, scales_hat, means_hat)
+        z_bits = self.estimate_bits(z, self.scales_z_hat, self.means_z_hat)
+        y_bits = self.estimate_bits(y, scales_y_hat, means_y_hat)
         outputs["estimated_bits"] = {"y": y_bits, "z": z_bits}
 
         ############## 엔트로피 코딩을 하지 않는 경우 여기에서 return ##############
@@ -156,11 +156,11 @@ class MeanScaleHyperprior(nn.Module):
             gaussian_coder = constriction.stream.stack.AnsCoder()
             entropy_model = constriction.stream.model.QuantizedGaussian(-256, 256)
 
-            z_for_code = torch.round(z - self.z_means)
-            y_for_code = torch.round(y - means_hat)
+            r_z_hat = torch.round(z - self.means_z_hat)
+            r_y_hat = torch.round(y - means_y_hat)
 
-            z_scales = torch.clamp(self.z_scales, 0.11)
-            scales_hat = torch.clamp(scales_hat, 0.11)
+            z_scales = torch.clamp(self.scales_z_hat, 0.11)
+            scales_hat = torch.clamp(scales_y_hat, 0.11)
 
             # round(z)에 대해 N(z_means, z_scales)으로 엔트로피 코딩하는 대신,
             # round(z - z_means)에 대해 N(0, z_scales)으로 엔트로피 코딩 수행
@@ -168,7 +168,7 @@ class MeanScaleHyperprior(nn.Module):
             # https://groups.google.com/g/tensorflow-compression/c/LQtTAo6l26U/m/cD4ZzmJUAgAJ
 
             gaussian_coder.encode_reverse(
-                self.to_1d_numpy(z_for_code, np.int32),
+                self.to_1d_numpy(r_z_hat, np.int32),
                 entropy_model,
                 self.to_1d_numpy(torch.zeros_like(z), np.float32),
                 self.to_1d_numpy(z_scales, np.float32, expand_as=z),
@@ -178,7 +178,7 @@ class MeanScaleHyperprior(nn.Module):
             gaussian_coder.clear()  # y를 코딩하기 전 gaussian_coder의 상태 초기화
 
             gaussian_coder.encode_reverse(
-                self.to_1d_numpy(y_for_code, np.int32),
+                self.to_1d_numpy(r_y_hat, np.int32),
                 entropy_model,
                 self.to_1d_numpy(torch.zeros_like(y), np.float32),
                 self.to_1d_numpy(scales_hat, np.float32),
@@ -234,6 +234,7 @@ class MeanScaleHyperprior(nn.Module):
         half = float(0.5)
 
         if self.training:
+            # 학습 중에는 rounding 대신 noise를 추가한 y_tilde, z_tilde를 비트량 추정에 사용
             noise = torch.empty_like(inputs).uniform_(-half, half)
             inputs = inputs + noise
         else:
@@ -249,7 +250,7 @@ class MeanScaleHyperprior(nn.Module):
         likelihoods = likelihoods_upper - likelihoods_lower
         likelihoods = LowerBoundFunction.apply(likelihoods, self.lowerbound_likelihoods)
 
-        bits = -torch.log2(likelihoods).sum()
+        bits = torch.log2(1 / likelihoods).sum()
         return bits
 
     @staticmethod
